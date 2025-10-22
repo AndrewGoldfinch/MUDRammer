@@ -1,0 +1,35 @@
+# Slather configuration for code coverage
+# https://github.com/SlatherOrg/slather
+
+# Coverage service (uncomment one)
+# coverage_service: codecov
+# coverage_access_token: YOUR_CODECOV_TOKEN
+
+# Xcode project settings
+workspace: src/Mudrammer.xcworkspace
+xcodeproj: src/Mudrammer.xcodeproj
+scheme: MUDRammer Dev
+
+# Output settings
+output_directory: output/coverage
+html: true
+
+# Files to ignore
+ignore:
+  - "src/Pods/*"
+  - "src/Mudrammer/Vendor/*"
+  - "src/MRTests/*"
+  - "**/*Tests.m"
+  - "**/*Test.m"
+
+# Binary file (if needed)
+# binary_file: output/build/MUDRammer.app/MUDRammer
+
+# Show coverage for individual files
+show: true
+
+# Fail if coverage is below threshold (optional)
+# minimum_coverage: 80
+
+# Use Xcode's standard code coverage
+# use_xcov: true
