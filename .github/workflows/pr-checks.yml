@@ -1,0 +1,157 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pr-title-check:
+    name: Check PR Title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title format
+        uses: amannn/action-semantic-pull-request@v5
+        with:
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            test
+            chore
+            perf
+            ci
+            build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  code-review:
+    name: Automated Code Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for large files
+        run: |
+          echo "Checking for files larger than 500KB..."
+          find src -type f -size +500k | while read file; do
+            echo "::warning file=$file::Large file detected (>500KB)"
+          done
+
+      - name: Check for TODO comments
+        run: |
+          echo "Checking for TODO/FIXME comments..."
+          grep -r "TODO\|FIXME" src/ --exclude-dir=Pods || echo "No TODOs found"
+
+      - name: Check for debugging code
+        run: |
+          echo "Checking for debugging code..."
+          ! grep -r "NSLog\|printf" src/Mudrammer/ --include="*.m" --include="*.h" || {
+            echo "::warning::Found NSLog/printf - consider using DLog for debug-only logging"
+          }
+
+  size-check:
+    name: Check Binary Size
+    runs-on: macos-13
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_14.3.1.app/Contents/Developer
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.1'
+          bundler-cache: true
+
+      - name: Setup CocoaPods-Keys for CI
+        run: |
+          bundle exec pod keys --project-directory=src set HOCKEYBETA_KEY '-'
+          bundle exec pod keys --project-directory=src set HOCKEYLIVE_KEY '-'
+          bundle exec pod keys --project-directory=src set SPLINESOFT_AFFILIATE_KEY '-'
+          bundle exec pod keys --project-directory=src set USERVOICE_FORUM_SITE '-'
+          bundle exec pod keys --project-directory=src set USERVOICE_FORUM_ID '-'
+
+      - name: Install Dependencies
+        run: |
+          bundle install
+          bundle exec pod install --project-directory=src
+
+      - name: Build and measure size
+        run: |
+          xcodebuild clean build \
+            -workspace src/Mudrammer.xcworkspace \
+            -scheme 'MUDRammer Dev' \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            BUILD_DIR=output/build
+
+          # Find and report binary size
+          find output/build -name "*.app" | while read app; do
+            size=$(du -sh "$app" | cut -f1)
+            echo "App size: $size"
+          done
+
+  test-coverage-report:
+    name: Test Coverage Report
+    runs-on: macos-13
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_14.3.1.app/Contents/Developer
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.1'
+          bundler-cache: true
+
+      - name: Setup CocoaPods-Keys for CI
+        run: |
+          bundle exec pod keys --project-directory=src set HOCKEYBETA_KEY '-'
+          bundle exec pod keys --project-directory=src set HOCKEYLIVE_KEY '-'
+          bundle exec pod keys --project-directory=src set SPLINESOFT_AFFILIATE_KEY '-'
+          bundle exec pod keys --project-directory=src set USERVOICE_FORUM_SITE '-'
+          bundle exec pod keys --project-directory=src set USERVOICE_FORUM_ID '-'
+
+      - name: Install Dependencies
+        run: |
+          bundle install
+          bundle exec pod install --project-directory=src
+
+      - name: Run Tests with Coverage
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -workspace src/Mudrammer.xcworkspace \
+            -scheme 'MUDRammer Dev' \
+            -destination 'platform=iOS Simulator,name=iPhone 14,OS=16.4' \
+            -enableCodeCoverage YES \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            | bundle exec xcpretty --color
+
+      - name: Generate Coverage Report
+        run: |
+          gem install slather
+          slather coverage \
+            --workspace src/Mudrammer.xcworkspace \
+            --scheme 'MUDRammer Dev' \
+            --proj src/Mudrammer.xcodeproj \
+            --output-directory output/coverage \
+            --html || true
+
+      - name: Comment Coverage on PR
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "Code coverage report would be posted here"
+          # You can add a GitHub Action to post coverage as a comment

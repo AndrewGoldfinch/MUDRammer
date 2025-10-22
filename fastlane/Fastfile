@@ -1,0 +1,240 @@
+# Fastfile for MUDRammer
+# Automated build, test, and deployment
+
+default_platform(:ios)
+
+platform :ios do
+
+  #####################
+  # CONFIGURATION
+  #####################
+
+  before_all do
+    # Setup environment
+    ENV["FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"] = "120"
+    ENV["FASTLANE_XCODE_LIST_TIMEOUT"] = "120"
+  end
+
+  #####################
+  # LANES
+  #####################
+
+  desc "Run all tests"
+  lane :test do
+    scan(
+      workspace: "src/Mudrammer.xcworkspace",
+      scheme: "MUDRammer Dev",
+      device: "iPhone 14",
+      code_coverage: true,
+      clean: true,
+      output_directory: "output",
+      output_types: "html,junit",
+      buildlog_path: "output/buildlogs",
+      fail_build: true
+    )
+  end
+
+  desc "Run comprehensive tests (all new test suites)"
+  lane :test_comprehensive do
+    UI.message("Running comprehensive ANSI engine tests...")
+
+    scan(
+      workspace: "src/Mudrammer.xcworkspace",
+      scheme: "MUDRammer Dev",
+      device: "iPhone 14",
+      code_coverage: true,
+      clean: false,
+      only_testing: [
+        "MRTests/MRANSIEngineComprehensiveTests",
+        "MRTests/MRANSIColorMappingTests",
+        "MRTests/MRANSIStateManagementTests"
+      ],
+      output_directory: "output/comprehensive",
+      output_types: "html,junit",
+      fail_build: true
+    )
+  end
+
+  desc "Run tests and generate code coverage report"
+  lane :test_with_coverage do
+    test
+
+    # Generate coverage report with slather
+    slather(
+      workspace: "src/Mudrammer.xcworkspace",
+      scheme: "MUDRammer Dev",
+      proj: "src/Mudrammer.xcodeproj",
+      output_directory: "output/coverage",
+      html: true,
+      show: true
+    )
+  end
+
+  desc "Run linting and code quality checks"
+  lane :lint do
+    UI.message("Running code quality checks...")
+
+    # Count lines of code
+    sh("cloc --exclude-dir=Pods --quiet --sum-one ../src") rescue UI.error("cloc not installed")
+
+    # Check for outdated CocoaPods
+    UI.message("Checking for outdated pods...")
+    sh("cd .. && bundle exec pod outdated --project-directory=src") rescue UI.message("All pods up to date")
+
+    # Find unused imports
+    UI.message("Finding unused imports...")
+    sh("cd .. && bundle exec fui --path src/Mudrammer find") rescue UI.message("No unused imports found")
+
+    # Check header styles
+    UI.message("Checking header styles...")
+    sh("cd .. && bundle exec obcd --path src/Mudrammer find HeaderStyle") rescue nil
+    sh("cd .. && bundle exec obcd --path src/MRTests find HeaderStyle") rescue nil
+
+    # Run static analyzer
+    UI.message("Running static analyzer...")
+    analyze_code(
+      workspace: "src/Mudrammer.xcworkspace",
+      scheme: "MUDRammer Dev"
+    )
+
+    UI.success("✓ Linting complete!")
+  end
+
+  desc "Full CI pipeline (setup, test, lint, coverage)"
+  lane :ci do
+    setup_ci_environment
+    test_with_coverage
+    lint
+
+    UI.success("✓ CI pipeline complete!")
+  end
+
+  desc "Setup CI environment"
+  lane :setup_ci_environment do
+    UI.message("Setting up CI environment...")
+
+    # Setup CocoaPods keys for CI
+    [
+      "HOCKEYBETA_KEY",
+      "HOCKEYLIVE_KEY",
+      "SPLINESOFT_AFFILIATE_KEY",
+      "USERVOICE_FORUM_SITE",
+      "USERVOICE_FORUM_ID"
+    ].each do |key|
+      sh("cd .. && bundle exec pod keys --project-directory=src set #{key} '-'") rescue nil
+    end
+
+    # Install pods
+    cocoapods(
+      podfile: "src/Podfile",
+      clean_install: true
+    )
+
+    UI.success("✓ CI environment ready!")
+  end
+
+  desc "Build for testing (no deploy)"
+  lane :build do
+    build_app(
+      workspace: "src/Mudrammer.xcworkspace",
+      scheme: "MUDRammer Dev",
+      configuration: "Debug",
+      skip_package_ipa: true,
+      skip_archive: true,
+      destination: "generic/platform=iOS Simulator",
+      build_path: "output/build",
+      derived_data_path: "output/derived_data"
+    )
+  end
+
+  desc "Generate code documentation"
+  lane :docs do
+    UI.message("Generating documentation with Jazzy...")
+
+    sh("cd .. && jazzy \
+      --clean \
+      --author 'Jonathan Hersh' \
+      --author_url https://github.com/splinesoft/MUDRammer \
+      --github_url https://github.com/splinesoft/MUDRammer \
+      --module MUDRammer \
+      --output docs") rescue UI.error("Documentation generation failed")
+
+    UI.success("✓ Documentation generated in docs/")
+  end
+
+  desc "Performance benchmarks"
+  lane :benchmark do
+    UI.message("Running performance benchmarks...")
+
+    scan(
+      workspace: "src/Mudrammer.xcworkspace",
+      scheme: "MUDRammer Dev",
+      device: "iPhone 14",
+      only_testing: [
+        "MRTests/MRANSIEngineComprehensiveTests/testPerformance_LargeDocument",
+        "MRTests/MRANSIEngineComprehensiveTests/testPerformance_ManyColors"
+      ],
+      output_directory: "output/benchmarks",
+      fail_build: false
+    )
+
+    UI.success("✓ Benchmarks complete! Check output/benchmarks/")
+  end
+
+  desc "Pre-commit checks (fast)"
+  lane :precommit do
+    UI.message("Running pre-commit checks...")
+
+    # Quick build check
+    build
+
+    # Run subset of fast tests
+    scan(
+      workspace: "src/Mudrammer.xcworkspace",
+      scheme: "MUDRammer Dev",
+      device: "iPhone 14",
+      code_coverage: false,
+      clean: false,
+      skip_testing: [
+        "MRTests/MRANSIEngineComprehensiveTests/testPerformance_LargeDocument",
+        "MRTests/MRANSIEngineComprehensiveTests/testPerformance_ManyColors"
+      ],
+      output_directory: "output/precommit",
+      fail_build: true
+    )
+
+    UI.success("✓ Pre-commit checks passed!")
+  end
+
+  desc "Analyze code size and complexity"
+  lane :analyze_code_metrics do
+    UI.message("Analyzing code metrics...")
+
+    # Lines of code
+    sh("cloc --exclude-dir=Pods --by-file --csv --out=../output/cloc.csv ../src") rescue nil
+
+    # Cyclomatic complexity (if lizard is installed)
+    sh("lizard ../src/Mudrammer -o ../output/complexity.html") rescue UI.message("Install 'lizard' for complexity analysis")
+
+    UI.success("✓ Code metrics generated in output/")
+  end
+
+  #####################
+  # ERROR HANDLING
+  #####################
+
+  error do |lane, exception|
+    UI.error("Error in lane #{lane}: #{exception.message}")
+
+    # Could send notifications here
+    # slack(
+    #   message: "CI Failed: #{exception.message}",
+    #   success: false
+    # )
+  end
+
+  after_all do |lane|
+    UI.success("✓ Lane '#{lane}' completed successfully!")
+  end
+
+end

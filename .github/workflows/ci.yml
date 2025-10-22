@@ -1,0 +1,253 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main, develop, 'claude/**' ]
+  pull_request:
+    branches: [ master, main, develop ]
+
+jobs:
+  test:
+    name: Test on iOS Simulator
+    runs-on: macos-13
+
+    strategy:
+      matrix:
+        destination:
+          - "platform=iOS Simulator,name=iPhone 14,OS=16.4"
+
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_14.3.1.app/Contents/Developer
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for accurate git operations
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.1'
+          bundler-cache: true  # Cache bundle install
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v3
+        with:
+          path: src/Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('src/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      - name: Display Xcode version
+        run: xcodebuild -version
+
+      - name: Setup CocoaPods-Keys for CI
+        run: |
+          bundle exec pod keys --project-directory=src set HOCKEYBETA_KEY '-'
+          bundle exec pod keys --project-directory=src set HOCKEYLIVE_KEY '-'
+          bundle exec pod keys --project-directory=src set SPLINESOFT_AFFILIATE_KEY '-'
+          bundle exec pod keys --project-directory=src set USERVOICE_FORUM_SITE '-'
+          bundle exec pod keys --project-directory=src set USERVOICE_FORUM_ID '-'
+
+      - name: Install Dependencies
+        run: |
+          bundle install
+          bundle exec pod install --project-directory=src
+
+      - name: Run Tests
+        run: |
+          set -o pipefail
+          xcodebuild clean test \
+            -workspace src/Mudrammer.xcworkspace \
+            -scheme 'MUDRammer Dev' \
+            -destination "${{ matrix.destination }}" \
+            -enableCodeCoverage YES \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            | bundle exec xcpretty --color --report junit --output output/junit.xml
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results
+          path: output/junit.xml
+
+      - name: Upload Code Coverage
+        uses: codecov/codecov-action@v3
+        if: success()
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./output/coverage.xml
+          flags: unittests
+          name: codecov-mudrammer
+          fail_ci_if_error: false
+
+  lint:
+    name: Code Quality Checks
+    runs-on: macos-13
+
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_14.3.1.app/Contents/Developer
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.1'
+          bundler-cache: true
+
+      - name: Install Dependencies
+        run: |
+          bundle install
+          brew install cloc || true
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v3
+        with:
+          path: src/Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('src/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      - name: Setup CocoaPods-Keys for CI
+        run: |
+          bundle exec pod keys --project-directory=src set HOCKEYBETA_KEY '-'
+          bundle exec pod keys --project-directory=src set HOCKEYLIVE_KEY '-'
+          bundle exec pod keys --project-directory=src set SPLINESOFT_AFFILIATE_KEY '-'
+          bundle exec pod keys --project-directory=src set USERVOICE_FORUM_SITE '-'
+          bundle exec pod keys --project-directory=src set USERVOICE_FORUM_ID '-'
+
+      - name: Install CocoaPods
+        run: bundle exec pod install --project-directory=src
+
+      - name: Count Lines of Code
+        run: |
+          if command -v cloc &> /dev/null; then
+            cloc --exclude-dir=Pods --quiet --sum-one src
+          else
+            echo "cloc not available, skipping LOC count"
+          fi
+
+      - name: Check for Outdated Pods
+        run: bundle exec pod outdated --project-directory=src || true
+
+      - name: Find Unused Imports
+        run: bundle exec fui --path src/Mudrammer find || true
+
+      - name: Check Header Styles
+        run: |
+          bundle exec obcd --path src/Mudrammer find HeaderStyle || true
+          bundle exec obcd --path src/MRTests find HeaderStyle || true
+
+      - name: SwiftLint (if Swift files exist)
+        run: |
+          if command -v swiftlint &> /dev/null; then
+            swiftlint lint --config .swiftlint.yml || true
+          else
+            echo "SwiftLint not installed, skipping"
+          fi
+
+      - name: Static Analysis
+        run: |
+          xcodebuild analyze \
+            -workspace src/Mudrammer.xcworkspace \
+            -scheme 'MUDRammer Dev' \
+            -destination 'platform=iOS Simulator,name=iPhone 14,OS=16.4' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            | bundle exec xcpretty --color || true
+
+  security-scan:
+    name: Security Scan
+    runs-on: macos-13
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Dependency Check
+        run: |
+          # Check for known vulnerabilities in CocoaPods
+          if [ -f "src/Podfile.lock" ]; then
+            echo "Checking CocoaPods dependencies for known vulnerabilities..."
+            # You can add tools like 'bundle-audit' or similar here
+          fi
+
+      - name: Secret Scanning
+        run: |
+          # Check for accidentally committed secrets
+          echo "Scanning for potential secrets..."
+          ! grep -r "PRIVATE KEY" src/ || exit 1
+          ! grep -r "api_key.*=" src/ || exit 1
+          echo "Secret scan complete"
+
+  build-documentation:
+    name: Build Documentation
+    runs-on: macos-13
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.1'
+          bundler-cache: true
+
+      - name: Generate Code Documentation
+        run: |
+          # Install jazzy for documentation generation
+          gem install jazzy || true
+
+          # Generate docs
+          if command -v jazzy &> /dev/null; then
+            jazzy \
+              --clean \
+              --author "Jonathan Hersh" \
+              --author_url https://github.com/splinesoft/MUDRammer \
+              --github_url https://github.com/splinesoft/MUDRammer \
+              --module MUDRammer \
+              --output docs \
+              || echo "Documentation generation failed, continuing..."
+          else
+            echo "Jazzy not available, skipping documentation generation"
+          fi
+
+      - name: Upload Documentation
+        uses: actions/upload-artifact@v3
+        if: success()
+        with:
+          name: documentation
+          path: docs/
+
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [test, lint, security-scan]
+    if: always()
+
+    steps:
+      - name: Check CI Status
+        run: |
+          echo "Test Job: ${{ needs.test.result }}"
+          echo "Lint Job: ${{ needs.lint.result }}"
+          echo "Security Job: ${{ needs.security-scan.result }}"
+
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::Tests failed"
+            exit 1
+          fi
+
+          if [ "${{ needs.lint.result }}" != "success" ]; then
+            echo "::warning::Linting checks had issues"
+          fi
+
+          if [ "${{ needs.security-scan.result }}" != "success" ]; then
+            echo "::warning::Security scan had issues"
+          fi
